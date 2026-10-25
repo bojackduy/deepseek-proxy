@@ -42,7 +42,7 @@ func (s *server) routes() http.Handler {
 }
 
 func (s *server) health(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "auth": s.client != nil})
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "auth": s.client.HasToken()})
 }
 
 func (s *server) models(w http.ResponseWriter, _ *http.Request) {

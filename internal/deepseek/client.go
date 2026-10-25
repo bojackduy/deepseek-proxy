@@ -59,6 +59,9 @@ func NewClient(store *Store, baseURL string) *Client {
 	}
 }
 
+// HasToken reports whether the store holds a token, without exposing it.
+func (c *Client) HasToken() bool { return c.store.Token() != "" }
+
 func (c *Client) headers(pow string) http.Header {
 	data := c.store.Data()
 	h := make(http.Header)
