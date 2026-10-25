@@ -41,9 +41,9 @@ func (e *StatusError) Error() string {
 
 // Client talks to the DeepSeek web API.
 type Client struct {
-	store  *Store
-	http   *http.Client
-	base   string
+	store *Store
+	http  *http.Client
+	base  string
 }
 
 // NewClient builds a client with no overall timeout: completions stream for
