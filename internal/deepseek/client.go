@@ -128,6 +128,25 @@ func (c *Client) do(req *http.Request) ([]byte, error) {
 	return body, nil
 }
 
+// APIError is a failure envelope returned with HTTP 200.
+type APIError struct {
+	Code int
+	Msg  string
+}
+
+func (e *APIError) Error() string {
+	return fmt.Sprintf("deepseek API failed (%d): %s", e.Code, e.Msg)
+}
+
+// errForAPICode maps a web API failure onto a sentinel when the meaning is
+// stable, so an expired token is not reported as a transport error.
+func errForAPICode(code int, msg string) error {
+	if code == 40003 {
+		return ErrUnauthorized
+	}
+	return &APIError{Code: code, Msg: msg}
+}
+
 func truncate(b []byte, n int) string {
 	s := strings.TrimSpace(string(b))
 	if len(s) <= n {
@@ -158,7 +177,7 @@ func (c *Client) CreateSession(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("unexpected chat_session/create response: %w", err)
 	}
 	if res.Code != 0 {
-		return "", fmt.Errorf("chat_session/create failed (%d): %s", res.Code, res.Msg)
+		return "", fmt.Errorf("chat_session/create: %w", errForAPICode(res.Code, res.Msg))
 	}
 	id := res.Data.BizData.ChatSession.ID
 	if id == "" {
@@ -187,7 +206,7 @@ func (c *Client) powFor(ctx context.Context, targetPath string) (string, error) 
 		return "", fmt.Errorf("unexpected pow response: %w", err)
 	}
 	if res.Code != 0 {
-		return "", fmt.Errorf("pow challenge failed (%d): %s", res.Code, res.Msg)
+		return "", fmt.Errorf("pow challenge: %w", errForAPICode(res.Code, res.Msg))
 	}
 	target := res.Data.BizData
 	if sub, ok := target["challenge"].(map[string]any); ok {
@@ -359,7 +378,7 @@ func (c *Client) History(ctx context.Context, sessionID string) ([]HistoryMessag
 		return nil, fmt.Errorf("unexpected history response: %w", err)
 	}
 	if res.Code != 0 {
-		return nil, fmt.Errorf("history failed (%d): %s", res.Code, res.Msg)
+		return nil, fmt.Errorf("history: %w", errForAPICode(res.Code, res.Msg))
 	}
 	out := make([]HistoryMessage, 0, len(res.Data.BizData.ChatMessages))
 	for _, m := range res.Data.BizData.ChatMessages {

@@ -51,6 +51,13 @@ func (p *StreamParser) Feed(line string) (*ChatChunk, error) {
 		return nil, nil
 	}
 
+	// An error envelope can arrive inside an HTTP 200 stream. Surface it
+	// instead of ending the turn with an empty answer.
+	if code, ok := raw["code"].(float64); ok && code != 0 {
+		msg, _ := raw["msg"].(string)
+		return nil, errForAPICode(int(code), msg)
+	}
+
 	// Filter out metadata events
 	switch event {
 	case "hint":

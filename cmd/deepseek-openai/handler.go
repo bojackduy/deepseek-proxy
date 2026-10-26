@@ -306,6 +306,10 @@ func classify(err error) string {
 	if errors.As(err, &se) {
 		return fmt.Sprintf("http_%d", se.Status)
 	}
+	var ae *deepseek.APIError
+	if errors.As(err, &ae) {
+		return fmt.Sprintf("api_%d", ae.Code)
+	}
 	return "transport"
 }
 
