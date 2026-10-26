@@ -147,29 +147,41 @@ func equalMessages(a, b []chatMessage) bool {
 	return len(a) == len(b) && prefix(a, b)
 }
 
+// maxReseedPromptBytes bounds a fresh remote prompt. Live completion turns
+// with multi-hundred-KB reseeds fail validation (http_422); history is
+// trimmed oldest-first, the newest turn is never dropped.
+const maxReseedPromptBytes = 90000
+
 // renderReseed renders a complete prompt for a fresh remote session.
 func renderReseed(msgs []chatMessage, tools []toolDef, choice any) string {
-	var sb strings.Builder
 	instr := strings.TrimSpace(instructions(msgs) + "\n\n" + toolPrompt(tools, choice))
-	if instr != "" {
-		sb.WriteString("[Instructions]:\n")
-		sb.WriteString(instr)
-		sb.WriteString("\n\n")
-	}
 	history, current := splitLastTurn(msgs)
-	if len(history) > 0 {
-		sb.WriteString(historyIntro)
-		sb.WriteString(renderMessages(history))
-		sb.WriteString(historyEnd)
-		sb.WriteString("\n")
+	// Trim oldest history first until the prompt fits. The newest turn
+	// (current) is authoritative and is never dropped.
+	for {
+		var sb strings.Builder
+		if instr != "" {
+			sb.WriteString("[Instructions]:\n")
+			sb.WriteString(instr)
+			sb.WriteString("\n\n")
+		}
+		if len(history) > 0 {
+			sb.WriteString(historyIntro)
+			sb.WriteString(renderMessages(history))
+			sb.WriteString(historyEnd)
+			sb.WriteString("\n")
+		}
+		if len(current) > 0 {
+			sb.WriteString(turnIntro)
+			sb.WriteString(renderMessages(current))
+			sb.WriteString("\n")
+		}
+		sb.WriteString(answerNudge(tools, choice))
+		if sb.Len() <= maxReseedPromptBytes || len(history) == 0 {
+			return strings.TrimSpace(sb.String())
+		}
+		history = history[1:]
 	}
-	if len(current) > 0 {
-		sb.WriteString(turnIntro)
-		sb.WriteString(renderMessages(current))
-		sb.WriteString("\n")
-	}
-	sb.WriteString(answerNudge(tools, choice))
-	return strings.TrimSpace(sb.String())
 }
 
 // renderAppend renders only the messages the client added since the last

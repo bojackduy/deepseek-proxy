@@ -349,3 +349,42 @@ func TestToolReplyMarkdownEnvelope(t *testing.T) {
 		t.Fatalf("ordinary Markdown changed: %q %v", out.Text, err)
 	}
 }
+
+// TestLargeReseedTrimsOldestHistory reproduces the live http_422 shape:
+// a reseed with hundreds of KB of history and 13 tools must fit the remote
+// validation budget. Oldest history is dropped first; the newest user message
+// is never dropped and the turn still completes.
+func TestLargeReseedTrimsOldestHistory(t *testing.T) {
+	h := newHarness(t)
+	var tools []any
+	for i := 0; i < 13; i++ {
+		tools = append(tools, map[string]any{"type": "function", "function": map[string]any{
+			"name":        fmt.Sprintf("tool_%d", i),
+			"description": "test tool",
+			"parameters":  map[string]any{"type": "object", "properties": map[string]any{}},
+		}})
+	}
+	msgs := []any{}
+	for i := 0; i < 120; i++ {
+		msgs = append(msgs, user("history message number "+fmt.Sprint(i)+" "+strings.Repeat("x", 4000)))
+		msgs = append(msgs, assistant("ack "+fmt.Sprint(i)))
+	}
+	newest := "newest user question " + strings.Repeat("y", 100)
+	msgs = append(msgs, user(newest))
+	code, body := h.chat(t, "s-large", map[string]any{"model": "deepseek-web", "messages": msgs, "tools": tools})
+	if code != 200 {
+		t.Fatalf("large reseed code=%d body=%s", code, body)
+	}
+	if len(h.up.prompts) != 1 {
+		t.Fatalf("prompts=%d want 1", len(h.up.prompts))
+	}
+	if len(h.up.prompts[0]) > maxReseedPromptBytes {
+		t.Fatalf("reseed bytes=%d over budget=%d", len(h.up.prompts[0]), maxReseedPromptBytes)
+	}
+	if !strings.Contains(h.up.prompts[0], newest) {
+		t.Fatal("newest user message dropped from reseeded prompt")
+	}
+	if strings.Contains(h.up.prompts[0], "history message number 0") {
+		t.Fatal("oldest history was not trimmed")
+	}
+}
