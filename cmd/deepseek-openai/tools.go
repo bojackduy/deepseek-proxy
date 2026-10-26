@@ -113,6 +113,23 @@ type answer struct {
 // parseAnswer extracts validated tool calls from a model reply. Any wrapper
 // that fails validation fails the turn: rendered arguments are never source.
 func parseAnswer(reply string, tools []toolDef, choice any) (answer, error) {
+	// Remove only a whole-reply fence around literal tool wrappers. Never
+	// render Markdown or rewrite JSON, escapes, or argument strings.
+	fenced := false
+	trimmed := strings.TrimSpace(reply)
+	lines := strings.Split(trimmed, "\n")
+	if len(lines) >= 3 {
+		opener := strings.TrimSpace(lines[0])
+		for _, fence := range []string{"```", "~~~"} {
+			if (opener == fence || opener == fence+"json" || opener == fence+"xml" || opener == fence+"text") && strings.TrimSpace(lines[len(lines)-1]) == fence {
+				body := strings.Join(lines[1:len(lines)-1], "\n")
+				if toolMarker.MatchString(body) {
+					reply, fenced = body, true
+				}
+				break
+			}
+		}
+	}
 	out := answer{Text: strings.TrimSpace(reply)}
 	allowed, err := compileTools(tools)
 	if err != nil {
@@ -155,6 +172,9 @@ func parseAnswer(reply string, tools []toolDef, choice any) (answer, error) {
 		return answer{}, errors.New("incomplete opencode_bridge_call wrapper")
 	}
 	out.Text = strings.TrimSpace(out.Text)
+	if fenced && (len(out.Calls) == 0 || out.Text != "") {
+		return answer{}, errors.New("fenced tool reply must contain only bridge calls")
+	}
 	if len(out.Calls) > 0 && (strings.Contains(out.Text, "`") || regexp.MustCompile(`(?m)^\s*~~~`).MatchString(out.Text)) {
 		return answer{}, errors.New("bridge calls must not appear in Markdown code examples")
 	}

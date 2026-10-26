@@ -313,3 +313,39 @@ func TestModelSwitchKeepsThread(t *testing.T) {
 		t.Fatalf("model switch reseeded; creates=%d", h.up.creates)
 	}
 }
+
+func TestToolReplyMarkdownEnvelope(t *testing.T) {
+	var tools []toolDef
+	if err := json.Unmarshal([]byte(`[{"type":"function","function":{"name":"run","parameters":{"type":"object","properties":{"command":{"type":"string"}},"required":["command"],"additionalProperties":false}}}]`), &tools); err != nil {
+		t.Fatal(err)
+	}
+	call := `<opencode_bridge_call>{"name":"run","arguments":{"command":"echo ` + "`quoted`" + `"}}</opencode_bridge_call>`
+	for _, fence := range []string{"```", "```json", "```xml", "~~~json"} {
+		closing := fence[:3]
+		out, err := parseAnswer(fence+"\n"+call+"\n"+closing, tools, nil)
+		if err != nil || len(out.Calls) != 1 || out.Text != "" {
+			t.Fatalf("fence %q: calls=%d text=%q err=%v", fence, len(out.Calls), out.Text, err)
+		}
+		if out.Calls[0].Function.Arguments != `{"command":"echo `+"`quoted`"+`"}` {
+			t.Fatal("argument bytes changed")
+		}
+	}
+	for _, reply := range []string{
+		"Example:\n```json\n" + call + "\n```",
+		"```json\n" + call + "\n```\nThis is an example.",
+		"```json\n" + call,
+		"```json\n<opencode_bridge_call>{\"name\":\"run\",\"arguments\":{\"command\":\"x\"c}}</opencode_bridge_call>\n```",
+		"```json\n<opencode_bridge_call>{\"name\":\"run\",\"arguments\":{}}</opencode_bridge_call>\n```",
+	} {
+		if _, err := parseAnswer(reply, tools, nil); err == nil {
+			t.Fatalf("unsafe or invalid call accepted: %q", reply)
+		}
+	}
+	if _, err := parseAnswer("```json\n"+call+"\n```", tools, "none"); err == nil {
+		t.Fatal("tool_choice none bypassed")
+	}
+	prose := "```go\nfmt.Println(1)\n```"
+	if out, err := parseAnswer(prose, tools, nil); err != nil || out.Text != prose {
+		t.Fatalf("ordinary Markdown changed: %q %v", out.Text, err)
+	}
+}
