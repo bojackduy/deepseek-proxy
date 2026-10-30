@@ -30,6 +30,10 @@ type fakeUpstream struct {
 	parents        []string
 	answer         string
 	failCompletion bool
+	// rejectOverBytes simulates remote prompt validation (live http_422):
+	// a completion whose prompt exceeds the budget is rejected. Zero means
+	// no limit.
+	rejectOverBytes int
 	history        []historyEntry
 	historyOK      bool
 }
@@ -72,7 +76,13 @@ func (f *fakeUpstream) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		f.parents = append(f.parents, parent)
 		answer := f.answer
 		fail := f.failCompletion
+		reject := f.rejectOverBytes
+		promptLen := len(body.Prompt)
 		f.mu.Unlock()
+		if reject > 0 && promptLen > reject {
+			http.Error(w, `{"code":400}`, http.StatusUnprocessableEntity)
+			return
+		}
 		if fail {
 			http.Error(w, `{"code":500}`, http.StatusInternalServerError)
 			return
@@ -386,5 +396,77 @@ func TestLargeReseedTrimsOldestHistory(t *testing.T) {
 	}
 	if strings.Contains(h.up.prompts[0], "history message number 0") {
 		t.Fatal("oldest history was not trimmed")
+	}
+}
+
+// TestReproOversizedToolResultAppend is Phase-1 reproduction for the
+// tool-call crash loop: a delivered tool call followed by an append turn
+// carrying a large tool result exceeds the remote prompt validation budget
+// (live: http_422, reseed cap maxReseedPromptBytes already exists but the
+// append path is uncapped). The failed turn leaves a pending marker, and
+// identical retries wedge in retry/history_error 409s. Desired: the turn
+// completes on a budget-fitting prompt with the newest message intact.
+func TestReproOversizedToolResultAppend(t *testing.T) {
+	h := newHarness(t)
+	h.up.answer = `<opencode_bridge_call>{"name":"get_weather","arguments":{"city":"Hanoi"}}</opencode_bridge_call>`
+	h.up.rejectOverBytes = maxReseedPromptBytes
+	tools := []any{map[string]any{"type": "function", "function": map[string]any{
+		"name": "get_weather", "description": "weather",
+		"parameters": map[string]any{"type": "object", "properties": map[string]any{"city": map[string]any{"type": "string"}}, "required": []string{"city"}},
+	}}}
+	msgs := []any{user("weather?")}
+	code, body := h.chat(t, "s-repro", map[string]any{"model": "deepseek-web", "messages": msgs, "tools": tools})
+	if code != 200 {
+		t.Fatalf("turn1 code=%d body=%s", code, body)
+	}
+	var resp struct {
+		Choices []struct {
+			Message struct {
+				ToolCalls []struct {
+					ID string `json:"id"`
+				} `json:"tool_calls"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil || len(resp.Choices) != 1 || len(resp.Choices[0].Message.ToolCalls) != 1 {
+		t.Fatalf("turn1 no tool call: %s", body)
+	}
+	callID := resp.Choices[0].Message.ToolCalls[0].ID
+
+	// Append turn: canonical echo plus a large tool result and a new question.
+	newest := "and tomorrow?"
+	msgs = append(msgs, map[string]any{
+		"role":    "assistant",
+		"content": nil,
+		"tool_calls": []any{map[string]any{
+			"id":       callID,
+			"function": map[string]any{"name": "get_weather", "arguments": `{"city":"Hanoi"}`},
+		}},
+	}, map[string]any{"role": "tool", "tool_call_id": callID, "name": "get_weather", "content": strings.Repeat("r", 100<<10)},
+		user(newest))
+	code, body = h.chat(t, "s-repro", map[string]any{"model": "deepseek-web", "messages": msgs, "tools": tools})
+	appendBytes := 0
+	if len(h.up.prompts) > 1 {
+		appendBytes = len(h.up.prompts[1])
+	}
+	t.Logf("REPRO evidence: append code=%d prompt_bytes=%d budget=%d creates=%d completions=%d",
+		code, appendBytes, maxReseedPromptBytes, h.up.creates, h.up.completions)
+
+	// Identical retries with history down: the reported permanent 409 loop.
+	h.up.historyOK = false
+	code2, _ := h.chat(t, "s-repro", map[string]any{"model": "deepseek-web", "messages": msgs, "tools": tools})
+	code3, _ := h.chat(t, "s-repro", map[string]any{"model": "deepseek-web", "messages": msgs, "tools": tools})
+	t.Logf("REPRO evidence: retry codes=%d,%d completions=%d (loop when both 409)", code2, code3, h.up.completions)
+
+	if code != 200 {
+		t.Fatalf("oversized tool-result turn wedged: code=%d body=%s", code, body)
+	}
+	for i, p := range h.up.prompts {
+		if len(p) > maxReseedPromptBytes {
+			t.Fatalf("prompt[%d] bytes=%d over budget=%d", i, len(p), maxReseedPromptBytes)
+		}
+	}
+	if last := h.up.prompts[len(h.up.prompts)-1]; !strings.Contains(last, newest) {
+		t.Fatal("newest user message dropped from submitted prompt")
 	}
 }

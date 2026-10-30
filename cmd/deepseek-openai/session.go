@@ -163,12 +163,17 @@ func planTurn(s session, msgs []chatMessage, tools []toolDef, choice any) plan {
 		return plan{Mode: planReseed, Prompt: renderReseed(msgs, tools, choice), Seal: seal}
 	}
 	if s.Remote != "" && len(msgs) > len(s.Messages) && prefix(msgs, s.Messages) {
-		return plan{
-			Mode:   planAppend,
-			Remote: s.Remote,
-			Parent: s.Parent,
-			Prompt: renderAppend(msgs[len(s.Messages):], tools, choice),
-			Seal:   seal,
+		// Append only when the delta fits the remote validation budget. An
+		// oversized append (e.g. a large tool result) is promoted to a reseed,
+		// which trims oldest history instead of wedging the thread in 409s.
+		if prompt := renderAppend(msgs[len(s.Messages):], tools, choice); len(prompt) <= maxReseedPromptBytes {
+			return plan{
+				Mode:   planAppend,
+				Remote: s.Remote,
+				Parent: s.Parent,
+				Prompt: prompt,
+				Seal:   seal,
+			}
 		}
 	}
 	return plan{Mode: planReseed, Prompt: renderReseed(msgs, tools, choice), Seal: seal}
