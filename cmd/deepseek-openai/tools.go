@@ -1,13 +1,13 @@
 package main
 
 import (
-	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
 	"strings"
 
+	"github.com/bojackduy/bridgecore"
 	"github.com/santhosh-tekuri/jsonschema/v6"
 )
 
@@ -142,40 +142,35 @@ func parseAnswer(reply string, tools []toolDef, choice any) (answer, error) {
 			named, _ = fn["name"].(string)
 		}
 	}
-	for i, m := range toolBlock.FindAllStringSubmatch(reply, -1) {
-		var v struct {
-			Name      string          `json:"name"`
-			Arguments json.RawMessage `json:"arguments"`
-		}
-		if err := json.Unmarshal([]byte(m[1]), &v); err != nil {
-			return answer{}, fmt.Errorf("malformed tool JSON: %w", err)
-		}
-		var args map[string]any
-		if err := json.Unmarshal(v.Arguments, &args); err != nil || args == nil {
-			return answer{}, errors.New("tool arguments must be a JSON object")
-		}
-		if allowed[v.Name] == nil || choiceName == "none" || (named != "" && named != v.Name) {
-			return answer{}, fmt.Errorf("tool name %q is not allowed by tools/tool_choice", v.Name)
-		}
-		if err := allowed[v.Name].Validate(args); err != nil {
-			return answer{}, fmt.Errorf("tool %s arguments: %w", v.Name, err)
-		}
-		sum := sha256.Sum256([]byte(fmt.Sprintf("%s:%d", reply, i)))
+	// tool_choice normalization: bridgecore expects "none"/"auto"/"required"/name.
+	tc := choiceName
+	if tc == "" {
+		tc = "auto"
+	}
+	if named != "" {
+		tc = named
+	}
+	calls, err := bridgecore.ExtractExecutableCalls(reply, allowed, tc)
+	if err != nil {
+		return answer{}, err
+	}
+	for i, c := range calls {
 		out.Calls = append(out.Calls, toolCall{
-			ID:       fmt.Sprintf("call_%x", sum[:12]),
+			ID:       bridgecore.StableCallID(reply, i),
 			Type:     "function",
-			Function: callFunction{Name: v.Name, Arguments: string(v.Arguments)},
+			Function: callFunction{Name: c.Name, Arguments: c.RawArguments},
 		})
-		out.Text = strings.Replace(out.Text, m[0], "", 1)
 	}
-	if toolMarker.MatchString(out.Text) {
-		return answer{}, errors.New("incomplete opencode_bridge_call wrapper")
+	if len(calls) == 0 {
+		out.Text = strings.TrimSpace(trimmed)
+	} else {
+		out.Text = ""
 	}
-	out.Text = strings.TrimSpace(out.Text)
 	if fenced && (len(out.Calls) == 0 || out.Text != "") {
 		return answer{}, errors.New("fenced tool reply must contain only bridge calls")
 	}
-	if len(out.Calls) > 0 && (strings.Contains(out.Text, "`") || regexp.MustCompile(`(?m)^\s*~~~`).MatchString(out.Text)) {
+	if len(out.Calls) > 0 && out.Text != "" {
+		// prose-mixed already rejected by core; guard anyway
 		return answer{}, errors.New("bridge calls must not appear in Markdown code examples")
 	}
 	return out, nil
